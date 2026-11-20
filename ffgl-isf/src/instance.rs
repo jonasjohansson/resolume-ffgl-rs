@@ -191,6 +191,38 @@ impl FFGLInstance for IsfFFGLInstance {
                 if fp.needs_reload && !fp.path.is_empty() {
                     fp.needs_reload = false;
                     match image::open(&fp.path) {
+                        // A 16-bit image is data, not a mask: loaded as it is, at 16 bits, no mipmaps, rows
+                        // flipped so the file's top row is the top of the texture. Used for remap tables, whose
+                        // channels hold texture coordinates that 8 bits cannot resolve.
+                        Ok(img) if img.color().bytes_per_pixel() / img.color().channel_count() == 2 => {
+                            let rgba = img.to_rgba16();
+                            let (w, h) = rgba.dimensions();
+                            let raw = rgba.into_raw();
+                            let row = w as usize * 4;
+                            let mut flipped = Vec::with_capacity(raw.len());
+                            for y in (0..h as usize).rev() {
+                                flipped.extend_from_slice(&raw[y * row..(y + 1) * row]);
+                            }
+                            let data = RawImage2d {
+                                data: std::borrow::Cow::Owned(flipped),
+                                width: w,
+                                height: h,
+                                format: glium::texture::ClientFormat::U16U16U16U16,
+                            };
+                            match Texture2d::with_format(
+                                &self.glium.ctx,
+                                data,
+                                glium::texture::UncompressedFloatFormat::U16U16U16U16,
+                                glium::texture::MipmapsOption::NoMipmap,
+                            ) {
+                                Ok(tex) => {
+                                    self.file_textures.insert(fp.name.clone(), tex);
+                                }
+                                Err(e) => {
+                                    tracing::error!("Failed to create 16-bit texture for {}: {e}", fp.name);
+                                }
+                            }
+                        }
                         Ok(img) => {
                             let rgba = img.to_rgba8();
                             let dims = rgba.dimensions();
